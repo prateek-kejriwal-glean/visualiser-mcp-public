@@ -1,0 +1,19 @@
+{
+    "name": "multi-visualiser-mcp-app",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "preview": "vite preview"
+    },
+    "devDependencies": {
+        "vite": "^6.3.5",
+        "vite-plugin-singlefile": "^2.3.0"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/ext-apps": "^1.5.0",
+        "@modelcontextprotocol/sdk": "^1.25.3",
+        "chart.js": "^4.5.1"
+    }
+}

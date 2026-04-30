@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  a-generic-mcp-server:
+    build: .
+    ports:
+      - "443:443"
+    environment:
+      - PORT=443
+      - SUPPORTED_EMAIL_ADDRESSES=${SUPPORTED_EMAIL_ADDRESSES}
+      - CLIENT_ID=${CLIENT_ID}
+      - ISSUER=${ISSUER}
+      - USER_INFO_URL=${USER_INFO_URL}
+      - KEY=${KEY}
+      - CERT=${CERT}
+      - MCP_API_KEY=${MCP_API_KEY}
+    env_file:
+      - env
+    restart: unless-stopped
