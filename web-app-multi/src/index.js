@@ -1,5 +1,7 @@
 import { App, PostMessageTransport } from '@modelcontextprotocol/ext-apps'
 import { Chart, registerables } from 'chart.js'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   GLEAN_CHART_PALETTE,
   GLEAN_PRIMARY_SOFT_FILL,
@@ -12,6 +14,116 @@ Chart.register(...registerables)
 
 const palette = GLEAN_CHART_PALETTE
 
+/** Permissions Policy: programmatic downloads (e.g. jsPDF.save). Blocked in sandboxed iframes without allow-downloads. */
+function isDownloadsFeatureAllowed() {
+  try {
+    const pp = document.permissionsPolicy
+    if (pp && typeof pp.allowsFeature === 'function') {
+      return pp.allowsFeature('downloads')
+    }
+  } catch {
+    // Unsupported feature name or API
+  }
+  return true
+}
+
+const DOWNLOADS_ALLOWED = isDownloadsFeatureAllowed()
+
+function sanitizeFilename(name) {
+  const s = String(name ?? 'chart')
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .trim()
+  return s || 'chart'
+}
+
+function buildPdfTableData(payload) {
+  if (!payload || !Array.isArray(payload.labels) || payload.labels.length === 0) {
+    return { head: [['Label', 'Value']], body: [['—', '—']] }
+  }
+  const hasMultiSeries = payload.series && payload.series.length > 0
+  if (hasMultiSeries) {
+    const head = [['Label', ...payload.series.map((s) => String(s.name))]]
+    const body = payload.labels.map((label, i) => [
+      String(label),
+      ...payload.series.map((s) => (s.data[i] != null ? String(s.data[i]) : '')),
+    ])
+    return { head, body }
+  }
+  const dataArr = Array.isArray(payload.data) ? payload.data : []
+  return {
+    head: [['Label', 'Value']],
+    body: payload.labels.map((label, i) => [
+      String(label),
+      dataArr[i] != null ? String(dataArr[i]) : '',
+    ]),
+  }
+}
+
+function addLandscapeChartAndTablePage(pdf, imgData, canvasWidth, canvasHeight, title, payload) {
+  const pageW = pdf.internal.pageSize.getWidth()
+  const pageH = pdf.internal.pageSize.getHeight()
+  const margin = 40
+  const colGap = 14
+  const titleLine = title != null ? String(title) : ''
+  let contentTop = margin
+  if (titleLine) {
+    pdf.setFontSize(11)
+    pdf.setTextColor(28, 28, 30)
+    pdf.text(titleLine, margin, margin + 12)
+    contentTop = margin + 26
+  }
+  const contentBottom = pageH - margin
+  const availH = contentBottom - contentTop
+
+  const splitX = pageW / 2
+  const leftMaxW = splitX - colGap / 2 - margin
+  const rightX = splitX + colGap / 2
+  const rightMaxW = pageW - margin - rightX
+
+  const cw = canvasWidth
+  const ch = canvasHeight
+  let imgW = leftMaxW
+  let imgH = (ch / cw) * imgW
+  if (imgH > availH) {
+    imgH = availH
+    imgW = (cw / ch) * imgH
+  }
+  const imgX = margin + (leftMaxW - imgW) / 2
+  pdf.addImage(imgData, 'PNG', imgX, contentTop, imgW, imgH)
+
+  const { head, body } = buildPdfTableData(payload)
+  autoTable(pdf, {
+    head,
+    body,
+    startY: contentTop,
+    margin: { left: rightX, right: margin },
+    tableWidth: rightMaxW,
+    styles: {
+      fontSize: 8,
+      cellPadding: 3,
+      overflow: 'linebreak',
+      valign: 'middle',
+    },
+    headStyles: {
+      fillColor: [236, 234, 228],
+      textColor: [12, 12, 17],
+      fontStyle: 'bold',
+    },
+    alternateRowStyles: { fillColor: [252, 251, 248] },
+    theme: 'striped',
+    tableLineColor: [230, 226, 216],
+    tableLineWidth: 0.2,
+  })
+}
+
+function exportCanvasToPdf(canvas, { title, filenameBase, payload } = {}) {
+  if (!canvas || canvas.width < 2 || canvas.height < 2) return
+  const imgData = canvas.toDataURL('image/png', 1.0)
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+  addLandscapeChartAndTablePage(pdf, imgData, canvas.width, canvas.height, title, payload)
+  pdf.save(`${sanitizeFilename(filenameBase)}.pdf`)
+}
+
 /** Inline SVGs replace emoji for a calmer, product-aligned UI (Glean design language). */
 const VIZ_ICONS = {
   trend:
@@ -22,6 +134,8 @@ const VIZ_ICONS = {
     '<svg class="viz-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" opacity="0.35"/><circle cx="12" cy="12" r="4.5"/></svg>',
   table:
     '<svg class="viz-icon viz-icon--sm" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 5h16v3H4V5zm0 5h7v9H4v-9zm9 0h7v4h-7v-4zm0 5h7v4h-7v-4z"/></svg>',
+  pdf:
+    '<svg class="viz-icon viz-icon--sm" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm4 18H6V4h7v5h5v11zM8 12h8v2H8v-2zm0 4h8v2H8v-2z"/></svg>',
   reset:
     '<svg class="viz-icon viz-icon--sm" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12a8 8 0 0 1 14.32-4"/><path d="M20 4v5h-5"/></svg>',
 }
@@ -166,6 +280,14 @@ class ChartCard {
             <span class="table-toggle-icon">${VIZ_ICONS.table}</span>
             <span>Show Data</span>
           </button>
+          ${
+            DOWNLOADS_ALLOWED
+              ? `<button type="button" class="export-pdf-btn" aria-label="Export chart as PDF">
+            <span class="table-toggle-icon">${VIZ_ICONS.pdf}</span>
+            <span>Export PDF</span>
+          </button>`
+              : ''
+          }
         </div>
         <div class="data-table-wrap" hidden>
           <table class="data-table">
@@ -223,6 +345,23 @@ class ChartCard {
         this.tableVisible = !this.tableVisible
         this.updateTableVisibility()
       })
+    }
+
+    if (DOWNLOADS_ALLOWED) {
+      const exportPdfBtn = card.querySelector('.export-pdf-btn')
+      if (exportPdfBtn) {
+        exportPdfBtn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          const canvas = card.querySelector('canvas')
+          const payload = this.getRenderablePayload()
+          if (!canvas || !this.chart) return
+          exportCanvasToPdf(canvas, {
+            title: payload.visualizationName,
+            filenameBase: payload.visualizationName,
+            payload,
+          })
+        })
+      }
     }
 
     const resizeHandle = card.querySelector('.resize-handle')
@@ -575,6 +714,29 @@ let chartCards = []
 let latestPayload = null
 let dragState = null
 
+/** One landscape A4 page per chart, in current grid order (after any drag reorder). */
+function exportAllVisualisationsToPdf() {
+  const pages = []
+  for (const card of chartCards) {
+    if (!card.chart) continue
+    const canvas = card.element.querySelector('canvas')
+    if (!canvas || canvas.width < 2 || canvas.height < 2) continue
+    const payload = card.getRenderablePayload()
+    pages.push({ canvas, title: payload.visualizationName, payload })
+  }
+  if (pages.length === 0) return
+
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+  pages.forEach((p, i) => {
+    if (i > 0) pdf.addPage()
+    const imgData = p.canvas.toDataURL('image/png', 1.0)
+    addLandscapeChartAndTablePage(pdf, imgData, p.canvas.width, p.canvas.height, p.title, p.payload)
+  })
+  const filenameBase =
+    pages.length === 1 ? pages[0].title : 'Multi-chart-visualisation'
+  pdf.save(`${sanitizeFilename(filenameBase)}.pdf`)
+}
+
 function clearAllCharts() {
   chartCards.forEach((card) => card.destroy())
   chartCards = []
@@ -689,6 +851,7 @@ function applyFromArguments(args, isReset = false) {
   const hintEl = document.getElementById('hint')
   const titleEl = document.getElementById('title')
   const resetBtn = document.getElementById('reset-btn')
+  const headerActions = document.getElementById('header-actions')
 
   if (!grid) return
 
@@ -704,6 +867,10 @@ function applyFromArguments(args, isReset = false) {
 
   if (resetBtn) {
     resetBtn.hidden = false
+  }
+
+  if (headerActions) {
+    headerActions.hidden = false
   }
 
   payload.datasets.forEach((dataset, index) => {
@@ -727,6 +894,12 @@ function setupResetButton() {
   if (resetBtn) {
     resetBtn.addEventListener('click', resetToOriginal)
   }
+}
+
+function setupExportAllPdfButton() {
+  const btn = document.getElementById('export-all-pdf-btn')
+  if (!btn) return
+  btn.addEventListener('click', () => exportAllVisualisationsToPdf())
 }
 
 const CARD_MIN_WIDTH = 300
@@ -774,7 +947,12 @@ app.addEventListener('toolresult', (params) => {
   }
 })
 
+if (!DOWNLOADS_ALLOWED) {
+  document.getElementById('export-all-pdf-btn')?.remove()
+}
+
 setupResetButton()
+setupExportAllPdfButton()
 
 window.addEventListener('resize', updateGridLayout)
 

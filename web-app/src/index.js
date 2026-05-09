@@ -1,5 +1,7 @@
 import { App, PostMessageTransport } from '@modelcontextprotocol/ext-apps'
 import { Chart, registerables } from 'chart.js'
+import { jsPDF } from 'jspdf'
+import autoTable from 'jspdf-autotable'
 import {
   GLEAN_CHART_PALETTE,
   GLEAN_PRIMARY_SOFT_FILL,
@@ -11,6 +13,137 @@ import {
 Chart.register(...registerables)
 
 const palette = GLEAN_CHART_PALETTE
+
+/** Permissions Policy: programmatic downloads (e.g. jsPDF.save). Blocked in sandboxed iframes without allow-downloads. */
+function isDownloadsFeatureAllowed() {
+  try {
+    const pp = document.permissionsPolicy
+    if (pp && typeof pp.allowsFeature === 'function') {
+      return pp.allowsFeature('downloads')
+    }
+  } catch {
+    // Unsupported feature name or API
+  }
+  return true
+}
+
+function sanitizeFilename(name) {
+  const s = String(name ?? 'chart')
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .trim()
+  return s || 'chart'
+}
+
+/** Same rows/columns as the on-screen data table (labels × values or labels × series). */
+function buildPdfTableData(payload) {
+  if (!payload || !Array.isArray(payload.labels) || payload.labels.length === 0) {
+    return { head: [['Label', 'Value']], body: [['—', '—']] }
+  }
+  const hasMultiSeries = payload.series && payload.series.length > 0
+  if (hasMultiSeries) {
+    const head = [['Label', ...payload.series.map((s) => String(s.name))]]
+    const body = payload.labels.map((label, i) => [
+      String(label),
+      ...payload.series.map((s) => (s.data[i] != null ? String(s.data[i]) : '')),
+    ])
+    return { head, body }
+  }
+  const dataArr = Array.isArray(payload.data) ? payload.data : []
+  return {
+    head: [['Label', 'Value']],
+    body: payload.labels.map((label, i) => [
+      String(label),
+      dataArr[i] != null ? String(dataArr[i]) : '',
+    ]),
+  }
+}
+
+function addLandscapeChartAndTablePage(pdf, imgData, canvasWidth, canvasHeight, title, payload) {
+  const pageW = pdf.internal.pageSize.getWidth()
+  const pageH = pdf.internal.pageSize.getHeight()
+  const margin = 40
+  const colGap = 14
+  const titleLine = title != null ? String(title) : ''
+  let contentTop = margin
+  if (titleLine) {
+    pdf.setFontSize(11)
+    pdf.setTextColor(28, 28, 30)
+    pdf.text(titleLine, margin, margin + 12)
+    contentTop = margin + 26
+  }
+  const contentBottom = pageH - margin
+  const availH = contentBottom - contentTop
+
+  const splitX = pageW / 2
+  const leftMaxW = splitX - colGap / 2 - margin
+  const rightX = splitX + colGap / 2
+  const rightMaxW = pageW - margin - rightX
+
+  const cw = canvasWidth
+  const ch = canvasHeight
+  let imgW = leftMaxW
+  let imgH = (ch / cw) * imgW
+  if (imgH > availH) {
+    imgH = availH
+    imgW = (cw / ch) * imgH
+  }
+  const imgX = margin + (leftMaxW - imgW) / 2
+  pdf.addImage(imgData, 'PNG', imgX, contentTop, imgW, imgH)
+
+  const { head, body } = buildPdfTableData(payload)
+  autoTable(pdf, {
+    head,
+    body,
+    startY: contentTop,
+    margin: { left: rightX, right: margin },
+    tableWidth: rightMaxW,
+    styles: {
+      fontSize: 8,
+      cellPadding: 3,
+      overflow: 'linebreak',
+      valign: 'middle',
+    },
+    headStyles: {
+      fillColor: [236, 234, 228],
+      textColor: [12, 12, 17],
+      fontStyle: 'bold',
+    },
+    alternateRowStyles: { fillColor: [252, 251, 248] },
+    theme: 'striped',
+    tableLineColor: [230, 226, 216],
+    tableLineWidth: 0.2,
+  })
+}
+
+/** Embeds chart image (left) and data table (right) on a landscape A4 page and triggers download. */
+function exportCanvasToPdf(canvas, { title, filenameBase, payload } = {}) {
+  if (!canvas || canvas.width < 2 || canvas.height < 2) return
+  const imgData = canvas.toDataURL('image/png', 1.0)
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' })
+  addLandscapeChartAndTablePage(pdf, imgData, canvas.width, canvas.height, title, payload)
+  pdf.save(`${sanitizeFilename(filenameBase)}.pdf`)
+}
+
+function updateExportPdfButtonState() {
+  const btn = document.getElementById('export-pdf-btn')
+  if (!btn) return
+  btn.disabled = !chart
+}
+
+function setupExportPdf() {
+  const btn = document.getElementById('export-pdf-btn')
+  if (!btn) return
+  btn.addEventListener('click', () => {
+    const canvas = document.getElementById('chart')
+    const payload = getRenderablePayload()
+    if (!canvas || !payload || !chart) return
+    exportCanvasToPdf(canvas, {
+      title: payload.visualizationName,
+      filenameBase: payload.visualizationName,
+      payload,
+    })
+  })
+}
 
 function normalizeSeries(labelsLen, seriesRaw) {
   if (!Array.isArray(seriesRaw) || seriesRaw.length === 0) return null
@@ -113,6 +246,7 @@ function getPieDonutLabelsAndData(payload, mode) {
 
 function renderChart(payload) {
   destroyChart()
+  updateExportPdfButtonState()
   const canvas = document.getElementById('chart')
   const titleEl = document.getElementById('title')
   const hintEl = document.getElementById('hint')
@@ -162,6 +296,7 @@ function renderChart(payload) {
       },
     })
     updateAggregationToolbarVisibility()
+    updateExportPdfButtonState()
     return
   }
 
@@ -192,6 +327,7 @@ function renderChart(payload) {
       },
     })
     updateAggregationToolbarVisibility()
+    updateExportPdfButtonState()
     return
   }
 
@@ -240,6 +376,7 @@ function renderChart(payload) {
       },
     })
     updateAggregationToolbarVisibility()
+    updateExportPdfButtonState()
     return
   }
 
@@ -299,6 +436,7 @@ function renderChart(payload) {
   }
 
   updateAggregationToolbarVisibility()
+  updateExportPdfButtonState()
 }
 
 function setActiveAggregationButtons() {
@@ -482,7 +620,12 @@ app.addEventListener('toolresult', (params) => {
   }
 })
 
+if (!isDownloadsFeatureAllowed()) {
+  document.getElementById('export-pdf-btn')?.remove()
+}
+
 setupChartTypeSwitcher()
 setupAggregationControls()
 setupTableToggle()
+setupExportPdf()
 app.connect(new PostMessageTransport(window.parent, window.parent))

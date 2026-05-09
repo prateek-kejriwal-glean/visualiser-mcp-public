@@ -12,6 +12,8 @@
         "vite-plugin-singlefile": "^2.3.0"
     },
     "dependencies": {
+        "jspdf": "^3.0.1",
+        "jspdf-autotable": "^5.0.2",
         "@modelcontextprotocol/ext-apps": "^1.5.0",
         "@modelcontextprotocol/sdk": "^1.25.3",
         "chart.js": "^4.5.1"
